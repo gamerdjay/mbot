@@ -47,11 +47,21 @@
             font-size: 14px;
             color: #8e8e93;
             margin-bottom: 25px;
+            word-wrap: break-word;
+            padding: 10px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.05);
         }
 
         .status.connected {
             color: var(--success);
             font-weight: bold;
+            background: rgba(52, 199, 89, 0.1);
+        }
+
+        .status.error {
+            color: var(--danger);
+            background: rgba(255, 59, 48, 0.1);
         }
 
         button {
@@ -80,7 +90,6 @@
             background-color: var(--danger);
         }
 
-        /* Grille du Joystick / Flèches */
         .joystick-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -94,13 +103,13 @@
             padding: 20px;
             font-size: 24px;
             border-radius: 15px;
+            user-select: none;
         }
 
         .btn-pad:active {
             background-color: var(--primary);
         }
 
-        /* Section Contrôle des LED */
         .led-controls {
             display: flex;
             justify-content: space-around;
@@ -120,7 +129,7 @@
         .led-off { background-color: #48484a; }
 
         .disabled {
-            opacity: 0.3;
+            opacity: 0.2;
             pointer-events: none;
         }
     </style>
@@ -134,7 +143,6 @@
     <button id="connectBtn" class="btn-connect">Se connecter au mBot</button>
 
     <div id="controlsZone" class="disabled">
-        
         <div class="joystick-grid">
             <div></div>
             <button class="btn-pad" onmousedown="envoyerDirection('AVANT')" onmouseup="stopMoteurs()" ontouchstart="envoyerDirection('AVANT')" ontouchend="stopMoteurs()">▲</button>
@@ -162,10 +170,6 @@
 </div>
 
 <script>
-    // Configuration des UUIDs standards pour le module Bluetooth du mBot (Série/UART)
-    const UART_SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb';
-    const UART_TX_CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb';
-
     let mbotDevice = null;
     let txCharacteristic = null;
 
@@ -173,7 +177,6 @@
     const statusLabel = document.getElementById('statusLabel');
     const controlsZone = document.getElementById('controlsZone');
 
-    // Gestion du clic de connexion/déconnexion
     connectBtn.addEventListener('click', async () => {
         if (!mbotDevice) {
             await connecterMBot();
@@ -183,33 +186,73 @@
     });
 
     async function connecterMBot() {
+        statusLabel.classList.remove('error', 'connected');
         try {
             statusLabel.textContent = "Recherche du mBot...";
             
-            // Demande d'accès au périphérique Bluetooth Makeblock
+            // Acceptation totale pour forcer l'ouverture du flux
             mbotDevice = await navigator.bluetooth.requestDevice({
-                filters: [{ namePrefix: 'Makeblock' }],
-                optionalServices: [UART_SERVICE_UUID]
+                acceptAllDevices: true,
+                optionalServices: [
+                    '0000ffe0-0000-1000-8000-00805f9b34fb',
+                    '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
+                ]
             });
 
-            statusLabel.textContent = "Connexion...";
+            statusLabel.textContent = "Connexion au robot...";
             const server = await mbotDevice.gatt.connect();
-            const service = await server.getPrimaryService(UART_SERVICE_UUID);
-            txCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
+            
+            statusLabel.textContent = "Scan forcé du flux...";
+            let serviceTrouve = null;
+            let charTrouvee = null;
 
-            // Interface utilisateur mise à jour
+            // Tentative standard 1 (Classique)
+            try {
+                serviceTrouve = await server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb');
+                charTrouvee = await serviceTrouve.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb');
+            } catch (e) {
+                // Tentative standard 2 (Nordic)
+                try {
+                    serviceTrouve = await server.getPrimaryService('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
+                    charTrouvee = await serviceTrouve.getCharacteristic('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
+                } catch (err2) {
+                    // MODE SECOURS ULTRA-AGRESSIF : On prend le premier service et la première caractéristique qui existent
+                    console.log("Recherche alternative désespérée...");
+                    const allServices = await server.getPrimaryServices();
+                    if(allServices.length > 0) {
+                        for(let s of allServices) {
+                            const chars = await s.getCharacteristics();
+                            for(let c of chars) {
+                                if(c.properties.write || c.properties.writeWithoutResponse) {
+                                    charTrouvee = c;
+                                    break;
+                                }
+                            }
+                            if(charTrouvee) break;
+                        }
+                    }
+                }
+            }
+
+            if (!charTrouvee) {
+                throw new Error("Aucun canal d'écriture disponible détecté.");
+            }
+
+            txCharacteristic = charTrouvee;
+            console.log("Connecté avec succès sur la caractéristique :", txCharacteristic.uuid);
+
             statusLabel.textContent = "Connecté au mBot !";
             statusLabel.classList.add('connected');
             connectBtn.textContent = "Se déconnecter";
             connectBtn.classList.add('btn-disconnect');
             controlsZone.classList.remove('disabled');
 
-            // Écouter si l'appareil se déconnecte tout seul
             mbotDevice.addEventListener('gattserverdisconnected', deconnecterMBot);
 
         } catch (error) {
             console.error(error);
-            statusLabel.textContent = "Erreur ou connexion annulée.";
+            statusLabel.textContent = "Erreur : " + error.message;
+            statusLabel.classList.add('error');
             mbotDevice = null;
         }
     }
@@ -222,13 +265,11 @@
         txCharacteristic = null;
 
         statusLabel.textContent = "Déconnecté";
-        statusLabel.classList.remove('connected');
+        statusLabel.classList.remove('connected', 'error');
         connectBtn.textContent = "Se connecter au mBot";
         connectBtn.classList.remove('btn-disconnect');
         controlsZone.classList.add('disabled');
     }
-
-    // --- PROTOCOLE MAKEBLOCK (Envoi des buffers binaires) ---
 
     async function envoyerCommande(buffer) {
         if (!txCharacteristic) return;
@@ -239,27 +280,20 @@
         }
     }
 
-    // Piloter les moteurs (Vitesse de -255 à 255)
-    // Format Makeblock : ff 55 [len] [idx] [action] [device] [port] [vitesse_L] [vitesse_H] ...
     function piloterMoteurs(vitesseGauche, vitesseDroite) {
-        // Séparation des entiers en 2 octets (Low byte, High Byte)
         const vg = new Int16Array([vitesseGauche])[0];
         const vd = new Int16Array([vitesseDroite])[0];
 
         const cmd = [
-            0xff, 0x55, // En-tête standard Makeblock
-            0x09,       // Longueur du payload restant
-            0x00,       // Index du message
-            0x02,       // Action : Écrire (Run)
-            0x05,       // Device ID : Moteurs DC
-            (vg & 0xff), ((vg >> 8) & 0xff), // Moteur Gauche
-            (vd & 0xff), ((vd >> 8) & 0xff)  // Moteur Droite
+            0xff, 0x55, 0x09, 0x00, 0x02, 0x05,
+            (vg & 0xff), ((vg >> 8) & 0xff),
+            (vd & 0xff), ((vd >> 8) & 0xff)
         ];
         envoyerCommande(cmd);
     }
 
     function envoyerDirection(direction) {
-        const vitesse = 150; // Ajuste la vitesse ici (max 255)
+        const vitesse = 150;
         switch(direction) {
             case 'AVANT':   piloterMoteurs(vitesse, vitesse); break;
             case 'ARRIERE': piloterMoteurs(-vitesse, -vitesse); break;
@@ -272,18 +306,8 @@
         piloterMoteurs(0, 0);
     }
 
-    // Changer la couleur des deux LED embarquées sur la carte
     function changerLED(r, g, b) {
-        const cmd = [
-            0xff, 0x55, 
-            0x09, // Longueur
-            0x00, 
-            0x02, // Action : Écrire
-            0x08, // Device ID : LED RGB onboard
-            0x00, // Port (0 pour les LED intégrées)
-            0x00, // Index (0 = toutes les LED)
-            r, g, b
-        ];
+        const cmd = [0xff, 0x55, 0x09, 0x00, 0x02, 0x08, 0x00, 0x00, r, g, b];
         envoyerCommande(cmd);
     }
 </script>
