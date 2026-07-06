@@ -190,56 +190,38 @@
         try {
             statusLabel.textContent = "Recherche du mBot...";
             
-            // Acceptation totale pour forcer l'ouverture du flux
+            // FILTRAGE STRICT ET CONFORME : Indispensable pour que le navigateur accepte d'ouvrir les services
             mbotDevice = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: [
-                    '0000ffe0-0000-1000-8000-00805f9b34fb',
-                    '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
+                filters: [
+                    { services: ['0000ffe0-0000-1000-8000-00805f9b34fb'] },
+                    { services: ['6e400001-b5a3-f393-e0a9-e50e24dcca9e'] }
                 ]
             });
 
             statusLabel.textContent = "Connexion au robot...";
             const server = await mbotDevice.gatt.connect();
             
-            statusLabel.textContent = "Scan forcé du flux...";
+            statusLabel.textContent = "Recherche du canal...";
             let serviceTrouve = null;
             let charTrouvee = null;
 
-            // Tentative standard 1 (Classique)
+            // Tentative 1 : Canal Classique ffe0
             try {
                 serviceTrouve = await server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb');
                 charTrouvee = await serviceTrouve.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb');
+                console.log("Connecté sur le service standard (FFE0)");
             } catch (e) {
-                // Tentative standard 2 (Nordic)
+                // Tentative 2 : Canal Récent Nordic 6e40
                 try {
                     serviceTrouve = await server.getPrimaryService('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
                     charTrouvee = await serviceTrouve.getCharacteristic('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
+                    console.log("Connecté sur le service récent (6E40)");
                 } catch (err2) {
-                    // MODE SECOURS ULTRA-AGRESSIF : On prend le premier service et la première caractéristique qui existent
-                    console.log("Recherche alternative désespérée...");
-                    const allServices = await server.getPrimaryServices();
-                    if(allServices.length > 0) {
-                        for(let s of allServices) {
-                            const chars = await s.getCharacteristics();
-                            for(let c of chars) {
-                                if(c.properties.write || c.properties.writeWithoutResponse) {
-                                    charTrouvee = c;
-                                    break;
-                                }
-                            }
-                            if(charTrouvee) break;
-                        }
-                    }
+                    throw new Error("Impossible d'accéder aux caractéristiques.");
                 }
             }
 
-            if (!charTrouvee) {
-                throw new Error("Aucun canal d'écriture disponible détecté.");
-            }
-
             txCharacteristic = charTrouvee;
-            console.log("Connecté avec succès sur la caractéristique :", txCharacteristic.uuid);
 
             statusLabel.textContent = "Connecté au mBot !";
             statusLabel.classList.add('connected');
